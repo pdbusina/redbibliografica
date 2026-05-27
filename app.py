@@ -14,30 +14,39 @@ st.caption("Explora la red de citas, resalta conexiones y diferencia lo que ya t
 # 🔹 CACHE API (1 hora)
 @st.cache_data(ttl=600, show_spinner=False)
 def fetch_citations(doi: str) -> list:
-    url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}?fields=title,references.title"
+    # Pedimos title, authors y year
+    url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}?fields=title,references.title,references.authors,references.year"
     try:
         res = requests.get(url, timeout=25)
         if res.status_code == 404:
             st.warning(f"🔍 DOI no encontrado: {doi}")
             return []
         elif res.status_code == 429:
-            st.warning("⏳ Límite de API alcanzado. Espera 1 min y reintenta.")
+            st.warning("⏳ Límite de API. Espera 1 min.")
             return []
         res.raise_for_status()
         data = res.json()
-        # ✅ Garantiza que siempre sea una lista iterable
         refs = data.get("references") or []
-        if not refs:
-            st.info(f"ℹ️ '{data.get('title', 'Paper')}' no tiene referencias indexadas.")
-            return []  # 🔑 Detiene la ejecución antes de iterar
-        return [r.get("title", "").strip() for r in refs if r.get("title")]
-    except requests.exceptions.RequestException as e:
-        st.error(f"🌐 Error de red/API: {e}")
-        return []
+        
+        results = []
+        for r in refs:
+            # Extraer autores y año
+            authors = [a.get('name') for a in (r.get('authors') or []) if a.get('name')]
+            first_author = authors[0].split()[-1] if authors else (r.get('title','').split()[0] if r.get('title') else "?")
+            year = r.get('year') or "?"
+            
+            # Construir referencia completa para el tooltip
+            full_ref = f"{', '.join(authors[:3])}{' et al.' if len(authors)>3 else ''} ({year}). {r.get('title', '')}"
+            
+            results.append({
+                'title': r.get('title', ''),
+                'label': f"{first_author} {year}",
+                'full_ref': full_ref
+            })
+        return results
     except Exception as e:
-        st.error(f"❌ Error inesperado: {e}")
+        st.error(f"❌ Error: {e}")
         return []
-
 # 🔹 FUZZY MATCHING
 def is_in_library(api_title, local_list, threshold):
     if not local_list: return False
@@ -50,10 +59,11 @@ def is_in_library(api_title, local_list, threshold):
 def build_graph(root_dois, depth, local_raw, threshold):
     G = nx.DiGraph()
     local_clean = [t.strip().lower() for t in local_raw.replace("\n", ",").split(",") if t.strip()]
-    
+
+    # Nodo raíz
     for doi in root_dois:
         nid = f"DOI:{doi}"
-        G.add_node(nid, title=doi, level=0, is_local=True, connections=0)
+        G.add_node(nid, title=doi, level=0, is_local=True, connections=0, label=doi[:15], full_ref=f"DOI: {doi}")
 
     queue = deque([(f"DOI:{d}", 0) for d in root_dois])
     visited = set(f"DOI:{d}" for d in root_dois)
@@ -67,12 +77,15 @@ def build_graph(root_dois, depth, local_raw, threshold):
         
         status.text(f"🔍 Explorando nivel {d+1}...")
         doi = node.replace("DOI:", "")
-        for title in fetch_citations(doi):
-            nid = f"TITLE:{title}"
-            local = is_in_library(title, local_clean, threshold)
+        for ref in fetch_citations(doi):
+            nid = f"TITLE:{ref['title']}"
+            local = is_in_library(ref['title'], local_clean, threshold)
             
+            # Si el nodo no existe, lo creamos con la etiqueta "Apellido Año"
             if nid not in G:
-                G.add_node(nid, title=title, level=d+1, is_local=local, connections=0)
+                G.add_node(nid, title=ref['title'], level=d+1, is_local=local, connections=0, 
+                           label=ref['label'], full_ref=ref['full_ref'])
+            
             G.add_edge(node, nid)
             G.nodes[node]["connections"] += 1
             G.nodes[nid]["connections"] += 1
@@ -92,9 +105,13 @@ def render(G):
     for n, d in G.nodes(data=True):
         size = max(10, min(d["connections"] * 6 + 10, 60))
         color = "#10b981" if d["is_local"] else "#ef4444"
-        label = d["title"][:45] + ("..." if len(d["title"]) > 45 else "")
-        net.add_node(n, label=label, size=size, color=color,
-                     title=f"Nivel: {d['level']}\nConexiones: {d['connections']}\nEn biblio: {'SÍ ✅' if d['is_local'] else 'NO ❌'}")
+        
+        net.add_node(n, 
+                     label=d["label"], 
+                     size=size, 
+                     color=color,
+                     title=f"📖 {d['full_ref']}\n🔗 Conexiones: {d['connections']}\n📁 En biblio: {'SÍ ✅' if d['is_local'] else 'NO ❌'}")
+                     
     for u, v in G.edges(): net.add_edge(u, v, color="#475569", width=1.5)
     
     net.set_options('{"physics":{"stabilization":{"iterations":150}},"interaction":{"hover":true}}')
