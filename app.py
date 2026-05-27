@@ -140,34 +140,49 @@ def build_graph(root_dois, depth, local_list, threshold):
 # 🔹 RENDER HTML + JS INTERACTIVO
 def render(G):
     net = Network(height="850px", width="100%", directed=True, bgcolor="#0f172a", font_color="#e2e8f0")
+    
+    debug_count = 0
     for n, d in G.nodes(data=True):
         size = max(10, min(d["connections"] * 6 + 10, 60))
         color = "#10b981" if d["is_local"] else "#ef4444"
         
+        # Validar que existan los datos
+        label_text = d.get("label", "Sin etiqueta")
+        full_ref = d.get("full_ref", "Sin referencia completa")
+        
+        # Debug: mostrar primeros 3 nodos
+        if debug_count < 3:
+            st.write(f"🔍 Nodo {debug_count}: label='{label_text[:30]}...', full_ref='{full_ref[:50]}...'")
+            debug_count += 1
+        
+        # Escapar caracteres especiales para HTML
+        full_ref_safe = full_ref.replace('"', '&quot;').replace("'", "&#39;").replace('\n', ' ')
+        
         net.add_node(n, 
-                     label=d["label"], 
+                     label=label_text, 
                      size=size, 
                      color=color,
-                     title=d['full_ref']) # El tooltip original se usa para el panel
+                     title=full_ref_safe)
 
-    for u, v in G.edges(): net.add_edge(u, v, color="#475569", width=1.5)
+    for u, v in G.edges(): 
+        net.add_edge(u, v, color="#475569", width=1.5)
     
     net.set_options('{"physics":{"stabilization":{"iterations":150}},"interaction":{"hover":true}}')
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
     net.save_graph(tmp.name)
     
-    # 🔌 Inyección del Panel Lateral Persistente
+    # 🔌 Panel lateral persistente
     js_panel = """
     <style>
         #info-panel {
-            position: fixed; right: 20px; top: 80px; width: 320px; max-height: 85vh;
-            background: #1e293b; color: #f1f5f9; padding: 15px; border-radius: 8px;
+            position: fixed; right: 20px; top: 80px; width: 350px; max-height: 85vh;
+            background: #1e293b; color: #f1f5f9; padding: 20px; border-radius: 8px;
             border: 1px solid #334155; font-size: 13px; z-index: 1000; overflow-y: auto;
             box-shadow: 0 10px 15px -3px rgba(0,0,0,0.5); display: none;
         }
-        #info-panel b { color: #10b981; font-size: 14px; }
+        #info-panel b { color: #10b981; font-size: 14px; display: block; margin-bottom: 10px; }
         .copy-btn {
-            margin-top: 10px; padding: 6px 12px; background: #3b82f6; color: white;
+            margin-top: 15px; padding: 8px 12px; background: #3b82f6; color: white;
             border: none; border-radius: 4px; cursor: pointer; font-size: 12px; width: 100%;
         }
         .copy-btn:hover { background: #2563eb; }
@@ -186,13 +201,12 @@ def render(G):
                         const nodeId = p.nodes[0];
                         const nodeData = net.body.data.nodes.get(nodeId);
                         
-                        if (nodeData) {
-                            // Mostrar panel
+                        if (nodeData && nodeData.title) {
                             panel.style.display = "block";
-                            panel.innerHTML = `<b>📖 Referencia:</b><br><br>${nodeData.title.replace(/\n/g, '<br>')}
-                                <button class="copy-btn" onclick="navigator.clipboard.writeText('${nodeData.title.replace(/'/g, "\\'")}'); this.innerText='✅ Copiado!'; setTimeout(()=>this.innerText='📋 Copiar Referencia', 2000)">📋 Copiar Referencia</button>`;
+                            const refText = nodeData.title;
+                            panel.innerHTML = `<b>📖 Referencia:</b><br><br>${refText}
+                                <button class="copy-btn" onclick="navigator.clipboard.writeText('${refText.replace(/'/g, "\\'")}'); this.innerText='✅ Copiado!'; setTimeout(()=>this.innerText='📋 Copiar Referencia', 2000)">📋 Copiar Referencia</button>`;
                             
-                            // Resaltar conexiones
                             const conn = net.getConnectedNodes(nodeId);
                             const edges = net.getConnectedEdges(nodeId);
                             net.setSelection({nodes:[nodeId, ...conn], edges}, {highlightEdges:true});
