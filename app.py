@@ -4,6 +4,7 @@ from pyvis.network import Network
 import requests
 import tempfile
 import os
+import urllib.parse
 from collections import deque
 from rapidfuzz import process, fuzz
 
@@ -14,53 +15,75 @@ st.caption("Explora la red de citas, resalta conexiones y diferencia lo que ya t
 # 🔹 CACHE API (1 hora)
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_citations(doi: str) -> list:
-    doi = doi.strip().strip('/')
-    url = f"https://api.crossref.org/works/{doi}"
-    # User-Agent es obligatorio para Crossref
-    headers = {"User-Agent": "RedBibliografica/1.0 (mailto:contact@redbibliografica.app)"}
+    doi_clean = doi.strip().strip('/')
+    doi_encoded = urllib.parse.quote(doi_clean, safe='')
     
+    # Headers obligatorios para evitar bloqueo en entornos cloud
+    headers = {
+        "User-Agent": "RedBibliografica/1.0 (mailto:tu@email.com)",
+        "Accept": "application/json"
+    }
+
+    # 1️⃣ Intento principal: Crossref
+    url = f"https://api.crossref.org/works/{doi_encoded}"
     try:
         res = requests.get(url, headers=headers, timeout=30)
-        if res.status_code == 404:
-            st.warning(f"🔍 DOI '{doi}' no encontrado en Crossref.")
+        if res.status_code == 200:
+            data = res.json().get("message", {})
+            refs = data.get("reference", [])
+            if not refs:
+                st.info(f"ℹ️ '{data.get('title', ['Paper'])[0]}' existe pero sin referencias indexadas.")
+                return []
+            results = []
+            for r in refs:
+                title = r.get("unstructured", "") or (r.get("article-title", [""])[0]) or "Sin título"
+                authors = []
+                if "author" in r:
+                    authors = [f"{a.get('family', '')} {a.get('given', '')}".strip() for a in r["author"] if "family" in a]
+                first = authors[0].split()[-1] if authors else title.split()[0]
+                year = r.get("year") or ""
+                if not year:
+                    for k in ["published-print", "published-online", "created"]:
+                        dp = r.get(k, {}).get("date-parts", [[None]])
+                        if dp and dp[0][0]: year = dp[0][0]; break
+                results.append({
+                    'title': title.strip(), 
+                    'label': f"{first} {year or '?'}", 
+                    'full_ref': f"{', '.join(authors[:3])}{' et al.' if len(authors)>3 else ''} ({year or '?'}). {title.strip()}"
+                })
+            return results
+        elif res.status_code in [403, 429]:
+            st.warning("⏳ Límite de API. Espera 60s y reintenta.")
             return []
-        res.raise_for_status()
-        data = res.json().get("message", {})
-        refs = data.get("reference", [])
-        if not refs:
-            st.info(f"ℹ️ '{data.get('title', ['Paper'])[0]}' existe pero no tiene referencias indexadas.")
-            return []
+    except Exception:
+        pass  # Pasa al fallback
 
-        results = []
-        for r in refs:
-            # Extraer título (Crossref a veces lo da en 'unstructured' o 'article-title')
-            title_raw = r.get("unstructured", "")
-            if not title_raw:
-                t_list = r.get("article-title", [])
-                title_raw = t_list[0] if t_list else r.get("journal-title", ["Sin título"])[0]
-            title = title_raw.strip()
-            
-            # Extraer autores
-            authors = []
-            if "author" in r:
-                authors = [f"{a.get('family', '')} {a.get('given', '')}".strip() for a in r["author"] if "family" in a]
-            first_author = authors[0].split()[-1] if authors else title.split()[0]
-            
-            # Extraer año
-            year = r.get("year", "")
-            if not year:
-                for key in ["published-print", "published-online", "created"]:
-                    date_parts = r.get(key, {}).get("date-parts", [[None]])
-                    if date_parts and date_parts[0][0]:
-                        year = date_parts[0][0]
-                        break
-                year = year or "?"
-                
-            full_ref = f"{', '.join(authors[:3])}{' et al.' if len(authors)>3 else ''} ({year}). {title}"
-            results.append({'title': title, 'label': f"{first_author} {year}", 'full_ref': full_ref.strip()})
-        return results
+    # 2️⃣ Fallback: Semantic Scholar
+    url_ss = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi_encoded}?fields=title,references.title,references.authors,references.year"
+    try:
+        res = requests.get(url_ss, headers=headers, timeout=25)
+        if res.status_code == 200:
+            data = res.json()
+            refs = data.get("references") or []
+            if not refs:
+                st.info(f"ℹ️ '{data.get('title', 'Paper')}' sin referencias en SS.")
+                return []
+            results = []
+            for r in refs:
+                authors = [a.get('name') for a in (r.get('authors') or []) if a.get('name')]
+                first = authors[0].split()[-1] if authors else "?"
+                year = r.get('year') or "?"
+                results.append({
+                    'title': r.get('title', ''), 
+                    'label': f"{first} {year}", 
+                    'full_ref': f"{', '.join(authors[:3])}{' et al.' if len(authors)>3 else ''} ({year}). {r.get('title', '')}"
+                })
+            return results
+        else:
+            st.warning(f"🌐 API devolvió código {res.status_code}. Espera 1 min.")
+            return []
     except Exception as e:
-        st.error(f"🌐 Error de red: {e}")
+        st.error(f"❌ Error de red: {e}")
         return []
         
 # 🔹 FUZZY MATCHING
