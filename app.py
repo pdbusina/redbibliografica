@@ -25,12 +25,14 @@ def fetch_citations(doi: str) -> list:
             return []
         res.raise_for_status()
         data = res.json()
-        refs = data.get("references", [])
+        # ✅ Garantiza que siempre sea una lista iterable
+        refs = data.get("references") or []
         if not refs:
-            st.info(f"ℹ️ '{data.get('title', 'Paper')}' no tiene referencias en esta API.")
+            st.info(f"ℹ️ '{data.get('title', 'Paper')}' no tiene referencias indexadas.")
+            return []  # 🔑 Detiene la ejecución antes de iterar
         return [r.get("title", "").strip() for r in refs if r.get("title")]
     except requests.exceptions.RequestException as e:
-        st.error(f"🌐 Error de red/API ({res.status_code if 'res' in locals() else '?'}): {e}")
+        st.error(f"🌐 Error de red/API: {e}")
         return []
     except Exception as e:
         st.error(f"❌ Error inesperado: {e}")
