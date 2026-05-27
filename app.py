@@ -139,20 +139,41 @@ def render(G):
     with open(tmp.name, "w", encoding="utf-8") as f: f.write(html.replace("</body>", js + "</body>"))
     return tmp.name
 
-# 🟢 UI
+# 🟢 INTERFAZ DE USUARIO
+def parse_biblio_input(file, text_input):
+    """Combina y limpia entradas de archivo + texto manual"""
+    items = []
+    if file is not None:
+        try:
+            content = file.read().decode("utf-8")
+            items = [line.strip() for line in content.replace("\n", ",").split(",") if line.strip()]
+        except Exception:
+            st.warning("⚠️ No se pudo leer el archivo. Usa UTF-8 o TXT/CSV.")
+    if text_input:
+        items += [t.strip() for t in text_input.replace("\n", ",").split(",") if t.strip()]
+    return ", ".join(set(items))  # Deduplica automáticamente
+
 with st.form("input_form"):
     dois = st.text_area("🔗 DOIs iniciales (separados por coma o salto de línea):", placeholder="10.1038/s41586-020-2003-2")
     depth = st.slider("📏 Profundidad de exploración:", 1, 3, 2)
-    local = st.text_area("📁 Tu biblioteca local (títulos o DOIs para colorear en verde):", placeholder="Pega aquí los papers que ya tienes...")
+    
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        uploaded_file = st.file_uploader("📂 Sube tu biblio local (.txt/.csv)", type=["txt", "csv"])
+    with col2:
+        local_text = st.text_area("✍️ O pega títulos/DOIs manuales:", placeholder="Opcional. Se sumará al archivo si subes uno.")
+        
     thresh = st.slider("🎯 Sensibilidad fuzzy (%):", 70, 100, 85)
     run = st.form_submit_button("🚀 Generar Red", type="primary")
 
 if run:
     doi_list = [d.strip().rstrip(",") for d in dois.replace("\n", ",").split(",") if d.strip()]
+    local_combined = parse_biblio_input(uploaded_file, local_text)
+    
     if not doi_list:
         st.error("❌ Ingresa al menos un DOI.")
     else:
-        G = build_graph(doi_list, depth, local, thresh)
+        G = build_graph(doi_list, depth, local_combined, thresh)
         if G.number_of_nodes() < 2:
             st.warning("⚠️ No se encontraron citas. Verifica los DOIs o baja la profundidad.")
         else:
