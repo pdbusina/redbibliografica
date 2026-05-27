@@ -18,45 +18,96 @@ def fetch_citations(doi: str) -> list:
     doi_clean = doi.strip().strip('/')
     doi_encoded = urllib.parse.quote(doi_clean, safe='')
     
-    # Headers obligatorios para evitar bloqueo en entornos cloud
     headers = {
         "User-Agent": "RedBibliografica/1.0 (mailto:tu@email.com)",
         "Accept": "application/json"
     }
 
-    # 1️⃣ Intento principal: Crossref
+    # 1️⃣ Intento: Crossref
     url = f"https://api.crossref.org/works/{doi_encoded}"
     try:
         res = requests.get(url, headers=headers, timeout=30)
         if res.status_code == 200:
             data = res.json().get("message", {})
             refs = data.get("reference", [])
+            
             if not refs:
-                st.info(f"ℹ️ '{data.get('title', ['Paper'])[0]}' existe pero sin referencias indexadas.")
+                st.info(f"ℹ️ Paper sin referencias indexadas.")
                 return []
+            
             results = []
-            for r in refs:
-                title = r.get("unstructured", "") or (r.get("article-title", [""])[0]) or "Sin título"
+            for idx, r in enumerate(refs[:50]):  # Limitar a 50 refs para evitar timeout
+                # Extraer título - Crossref tiene múltiples formatos
+                title = ""
+                if "unstructured" in r and r["unstructured"]:
+                    title = r["unstructured"]
+                elif "article-title" in r:
+                    at = r["article-title"]
+                    title = at[0] if isinstance(at, list) else at
+                elif "journal-title" in r:
+                    jt = r["journal-title"]
+                    title = jt[0] if isinstance(jt, list) else jt
+                
+                if not title:
+                    title = f"Referencia {idx+1}"
+                
+                # Extraer autores
                 authors = []
                 if "author" in r:
-                    authors = [f"{a.get('family', '')} {a.get('given', '')}".strip() for a in r["author"] if "family" in a]
-                first = authors[0].split()[-1] if authors else title.split()[0]
-                year = r.get("year") or ""
+                    for a in r["author"]:
+                        family = a.get("family", "")
+                        given = a.get("given", "")
+                        if family:
+                            authors.append(f"{family} {given}".strip())
+                
+                # Obtener primera inicial del primer autor
+                first_author = "?"
+                if authors:
+                    first_author = authors[0].split()[0] if authors[0] else "?"
+                elif title:
+                    # Fallback: primera palabra del título
+                    first_author = title.split()[0][:1].upper()
+                
+                # Extraer año
+                year = r.get("year", "")
                 if not year:
-                    for k in ["published-print", "published-online", "created"]:
-                        dp = r.get(k, {}).get("date-parts", [[None]])
-                        if dp and dp[0][0]: year = dp[0][0]; break
+                    for key in ["published-print", "published-online", "created"]:
+                        if key in r:
+                            date_parts = r[key].get("date-parts", [[None]])
+                            if date_parts and date_parts[0] and date_parts[0][0]:
+                                year = str(date_parts[0][0])
+                                break
+                
+                if not year:
+                    year = "?"
+                
+                # Construir referencia completa
+                author_str = ""
+                if authors:
+                    if len(authors) == 1:
+                        author_str = authors[0]
+                    elif len(authors) == 2:
+                        author_str = f"{authors[0]} y {authors[1]}"
+                    else:
+                        author_str = f"{authors[0]} et al."
+                
+                full_ref = f"{author_str} ({year}). {title}".strip()
+                
                 results.append({
                     'title': title.strip(), 
-                    'label': f"{first} {year or '?'}", 
-                    'full_ref': f"{', '.join(authors[:3])}{' et al.' if len(authors)>3 else ''} ({year or '?'}). {title.strip()}"
+                    'label': f"{first_author} {year}", 
+                    'full_ref': full_ref
                 })
+            
+            st.success(f"✅ {len(results)} referencias obtenidas de Crossref")
             return results
+            
         elif res.status_code in [403, 429]:
-            st.warning("⏳ Límite de API. Espera 60s y reintenta.")
+            st.warning("⏳ Límite de API Crossref. Espera 60s.")
             return []
-    except Exception:
-        pass  # Pasa al fallback
+            
+    except Exception as e:
+        st.warning(f"⚠️ Error Crossref: {e}. Intentando fallback...")
 
     # 2️⃣ Fallback: Semantic Scholar
     url_ss = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi_encoded}?fields=title,references.title,references.authors,references.year"
@@ -66,21 +117,29 @@ def fetch_citations(doi: str) -> list:
             data = res.json()
             refs = data.get("references") or []
             if not refs:
-                st.info(f"ℹ️ '{data.get('title', 'Paper')}' sin referencias en SS.")
+                st.info("ℹ️ Sin referencias en Semantic Scholar.")
                 return []
+            
             results = []
-            for r in refs:
-                authors = [a.get('name') for a in (r.get('authors') or []) if a.get('name')]
+            for r in refs[:50]:
+                authors = [a.get('name', '') for a in (r.get('authors') or []) if a.get('name')]
                 first = authors[0].split()[-1] if authors else "?"
                 year = r.get('year') or "?"
+                title = r.get('title', 'Sin título')
+                
+                author_str = f"{', '.join(authors[:3])}{' et al.' if len(authors)>3 else ''}"
+                full_ref = f"{author_str} ({year}). {title}"
+                
                 results.append({
-                    'title': r.get('title', ''), 
+                    'title': title, 
                     'label': f"{first} {year}", 
-                    'full_ref': f"{', '.join(authors[:3])}{' et al.' if len(authors)>3 else ''} ({year}). {r.get('title', '')}"
+                    'full_ref': full_ref
                 })
+            
+            st.success(f"✅ {len(results)} referencias de Semantic Scholar")
             return results
         else:
-            st.warning(f"🌐 API devolvió código {res.status_code}. Espera 1 min.")
+            st.warning(f"🌐 Semantic Scholar: código {res.status_code}")
             return []
     except Exception as e:
         st.error(f"❌ Error de red: {e}")
