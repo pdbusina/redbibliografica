@@ -197,23 +197,29 @@ with st.form("input_form"):
 
 if run:
     doi_list = [d.strip().rstrip(',') for d in dois.replace('\n', ',').split(',') if d.strip()]
+    # Limpieza de prefijos comunes
+    doi_list = [d.lstrip('DOI:').lstrip('https://doi.org/').strip() for d in doi_list]
     local_list = parse_biblio_input(uploaded_file, local_text)
     
     if not doi_list:
         st.error("❌ Ingresa al menos un DOI.")
-    else:
-        st.info("🔎 Verificando DOI principal...")
-        test_refs = fetch_citations(doi_list[0])
+        st.stop()
+
+    st.info("🔎 Verificando DOI principal...")
+    test_refs = fetch_citations(doi_list[0])
+    
+    if not test_refs:
+        st.warning("⚠️ No se obtuvieron citas. La API puede estar saturada. Espera 30s y reintenta, o prueba otro DOI.")
+        st.stop()
         
-        if not test_refs and G is None:
-            st.stop() # Detiene si el primer DOI falló
-            
-        G = build_graph(doi_list, depth, local_list, thresh)
-        if G.number_of_nodes() < 2:
-            st.warning("⚠️ Se exploró el DOI, pero no se encontraron referencias citadas en este nivel.")
-        else:
-            path = render(G)
-            with open(path, "r", encoding="utf-8") as f:
-                st.components.v1.html(f.read(), height=880, scrolling=True)
-            st.success("✅ Red generada. Haz clic en un nodo para ver el panel persistente.")
-            st.caption("🟢 En tu biblioteca | 🔴 Externa | Tamaño = Nº de conexiones cruzadas")
+    st.success("✅ DOI válido. Construyendo red...")
+    G = build_graph(doi_list, depth, local_list, thresh)
+    
+    if G.number_of_nodes() < 2:
+        st.warning("⚠️ El DOI existe, pero no tiene referencias indexadas en este nivel de profundidad.")
+    else:
+        path = render(G)
+        with open(path, "r", encoding="utf-8") as f:
+            st.components.v1.html(f.read(), height=880, scrolling=True)
+        st.success("✅ Red generada. Haz clic en un nodo para ver el panel persistente.")
+        st.caption("🟢 En tu biblioteca | 🔴 Externa | Tamaño = Nº de conexiones cruzadas")
