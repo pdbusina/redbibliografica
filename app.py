@@ -12,33 +12,52 @@ st.title("🕸️ RedBibliográfica: Mapeo de Referencias Cruzadas")
 st.caption("Explora la red de citas, resalta conexiones y diferencia lo que ya tienes de lo externo.")
 
 # 🔹 CACHE API (1 hora)
-@st.cache_data(ttl=600, show_spinner=False)
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_citations(doi: str) -> list:
-    doi = doi.strip().strip('/').replace("https://doi.org/", "").replace("http://dx.doi.org/", "")
-    url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}?fields=title,references.title,references.authors,references.year"
+    doi = doi.strip().strip('/')
+    url = f"https://api.crossref.org/works/{doi}"
+    # User-Agent es obligatorio para Crossref
+    headers = {"User-Agent": "RedBibliografica/1.0 (mailto:contact@redbibliografica.app)"}
+    
     try:
-        res = requests.get(url, timeout=25)
+        res = requests.get(url, headers=headers, timeout=30)
         if res.status_code == 404:
-            st.warning(f"🔍 '{doi}' no existe en Semantic Scholar.")
-            return []
-        if res.status_code == 429:
-            st.warning("⏳ Límite de API. Espera 60s y reintenta.")
+            st.warning(f"🔍 DOI '{doi}' no encontrado en Crossref.")
             return []
         res.raise_for_status()
-        data = res.json()
-        refs = data.get("references") or []
+        data = res.json().get("message", {})
+        refs = data.get("reference", [])
         if not refs:
-            st.info(f"ℹ️ '{data.get('title', 'Paper')}' existe pero tiene 0 referencias indexadas.")
+            st.info(f"ℹ️ '{data.get('title', ['Paper'])[0]}' existe pero no tiene referencias indexadas.")
             return []
-            
+
         results = []
         for r in refs:
-            authors = [a.get('name') for a in (r.get('authors') or []) if a.get('name')]
-            first_author = authors[0].split()[-1] if authors else "?"
-            year = r.get('year') or "?"
-            full_ref = f"{', '.join(authors[:3])}{' et al.' if len(authors)>3 else ''} ({year}). {r.get('title', '')}"
-            results.append({'title': r.get('title', ''), 'label': f"{first_author} {year}", 'full_ref': full_ref})
+            # Extraer título (Crossref a veces lo da en 'unstructured' o 'article-title')
+            title_raw = r.get("unstructured", "")
+            if not title_raw:
+                t_list = r.get("article-title", [])
+                title_raw = t_list[0] if t_list else r.get("journal-title", ["Sin título"])[0]
+            title = title_raw.strip()
+            
+            # Extraer autores
+            authors = []
+            if "author" in r:
+                authors = [f"{a.get('family', '')} {a.get('given', '')}".strip() for a in r["author"] if "family" in a]
+            first_author = authors[0].split()[-1] if authors else title.split()[0]
+            
+            # Extraer año
+            year = r.get("year", "")
+            if not year:
+                for key in ["published-print", "published-online", "created"]:
+                    date_parts = r.get(key, {}).get("date-parts", [[None]])
+                    if date_parts and date_parts[0][0]:
+                        year = date_parts[0][0]
+                        break
+                year = year or "?"
+                
+            full_ref = f"{', '.join(authors[:3])}{' et al.' if len(authors)>3 else ''} ({year}). {title}"
+            results.append({'title': title, 'label': f"{first_author} {year}", 'full_ref': full_ref.strip()})
         return results
     except Exception as e:
         st.error(f"🌐 Error de red: {e}")
