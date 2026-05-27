@@ -13,40 +13,37 @@ st.caption("Explora la red de citas, resalta conexiones y diferencia lo que ya t
 
 # 🔹 CACHE API (1 hora)
 @st.cache_data(ttl=600, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner=False)
 def fetch_citations(doi: str) -> list:
-    # Pedimos title, authors y year
+    doi = doi.strip().strip('/').replace("https://doi.org/", "").replace("http://dx.doi.org/", "")
     url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}?fields=title,references.title,references.authors,references.year"
     try:
         res = requests.get(url, timeout=25)
         if res.status_code == 404:
-            st.warning(f"🔍 DOI no encontrado: {doi}")
+            st.warning(f"🔍 '{doi}' no existe en Semantic Scholar.")
             return []
-        elif res.status_code == 429:
-            st.warning("⏳ Límite de API. Espera 1 min.")
+        if res.status_code == 429:
+            st.warning("⏳ Límite de API. Espera 60s y reintenta.")
             return []
         res.raise_for_status()
         data = res.json()
         refs = data.get("references") or []
-        
+        if not refs:
+            st.info(f"ℹ️ '{data.get('title', 'Paper')}' existe pero tiene 0 referencias indexadas.")
+            return []
+            
         results = []
         for r in refs:
-            # Extraer autores y año
             authors = [a.get('name') for a in (r.get('authors') or []) if a.get('name')]
-            first_author = authors[0].split()[-1] if authors else (r.get('title','').split()[0] if r.get('title') else "?")
+            first_author = authors[0].split()[-1] if authors else "?"
             year = r.get('year') or "?"
-            
-            # Construir referencia completa para el tooltip
             full_ref = f"{', '.join(authors[:3])}{' et al.' if len(authors)>3 else ''} ({year}). {r.get('title', '')}"
-            
-            results.append({
-                'title': r.get('title', ''),
-                'label': f"{first_author} {year}",
-                'full_ref': full_ref
-            })
+            results.append({'title': r.get('title', ''), 'label': f"{first_author} {year}", 'full_ref': full_ref})
         return results
     except Exception as e:
-        st.error(f"❌ Error: {e}")
+        st.error(f"🌐 Error de red: {e}")
         return []
+        
 # 🔹 FUZZY MATCHING
 def is_in_library(api_title, local_list, threshold):
     if not local_list: return False
@@ -199,18 +196,24 @@ with st.form("input_form"):
     run = st.form_submit_button("🚀 Generar Red", type="primary")
 
 if run:
-    doi_list = [d.strip().rstrip(",") for d in dois.replace("\n", ",").split(",") if d.strip()]
-    local_combined = parse_biblio_input(uploaded_file, local_text)
+    doi_list = [d.strip().rstrip(',') for d in dois.replace('\n', ',').split(',') if d.strip()]
+    local_list = parse_biblio_input(uploaded_file, local_text)
     
     if not doi_list:
         st.error("❌ Ingresa al menos un DOI.")
     else:
-        G = build_graph(doi_list, depth, local_combined, thresh)
+        st.info("🔎 Verificando DOI principal...")
+        test_refs = fetch_citations(doi_list[0])
+        
+        if not test_refs and G is None:
+            st.stop() # Detiene si el primer DOI falló
+            
+        G = build_graph(doi_list, depth, local_list, thresh)
         if G.number_of_nodes() < 2:
-            st.warning("⚠️ No se encontraron citas. Verifica los DOIs o baja la profundidad.")
+            st.warning("⚠️ Se exploró el DOI, pero no se encontraron referencias citadas en este nivel.")
         else:
             path = render(G)
             with open(path, "r", encoding="utf-8") as f:
                 st.components.v1.html(f.read(), height=880, scrolling=True)
-            st.success("✅ Red generada. Haz clic en un nodo para resaltar sus conexiones.")
+            st.success("✅ Red generada. Haz clic en un nodo para ver el panel persistente.")
             st.caption("🟢 En tu biblioteca | 🔴 Externa | Tamaño = Nº de conexiones cruzadas")
