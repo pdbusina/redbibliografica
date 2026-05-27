@@ -52,15 +52,15 @@ def is_in_library(api_title, local_list, threshold):
     if not local_list: return False
     q = api_title.lower()
     if q in local_list: return True
-    match = process.extractOne(q, local_list, scorer=fuzz.token_sort_ratio)
+    # token_set_ratio es mucho mejor para "Título largo" vs "Autor (Año). Título largo"
+    match = process.extractOne(q, local_list, scorer=fuzz.token_set_ratio)
     return match is not None and match[1] >= threshold
 
 # 🔹 CONSTRUCTOR DEL GRAFO
-def build_graph(root_dois, depth, local_raw, threshold):
+def build_graph(root_dois, depth, local_list, threshold):
     G = nx.DiGraph()
-    local_clean = [t.strip().lower() for t in local_raw.replace("\n", ",").split(",") if t.strip()]
+    local_clean = [t.strip().lower() for t in local_list if t.strip()]
 
-    # Nodo raíz
     for doi in root_dois:
         nid = f"DOI:{doi}"
         G.add_node(nid, title=doi, level=0, is_local=True, connections=0, label=doi[:15], full_ref=f"DOI: {doi}")
@@ -81,7 +81,6 @@ def build_graph(root_dois, depth, local_raw, threshold):
             nid = f"TITLE:{ref['title']}"
             local = is_in_library(ref['title'], local_clean, threshold)
             
-            # Si el nodo no existe, lo creamos con la etiqueta "Apellido Año"
             if nid not in G:
                 G.add_node(nid, title=ref['title'], level=d+1, is_local=local, connections=0, 
                            label=ref['label'], full_ref=ref['full_ref'])
@@ -110,48 +109,81 @@ def render(G):
                      label=d["label"], 
                      size=size, 
                      color=color,
-                     title=f"📖 {d['full_ref']}\n🔗 Conexiones: {d['connections']}\n📁 En biblio: {'SÍ ✅' if d['is_local'] else 'NO ❌'}")
-                     
+                     title=d['full_ref']) # El tooltip original se usa para el panel
+
     for u, v in G.edges(): net.add_edge(u, v, color="#475569", width=1.5)
     
     net.set_options('{"physics":{"stabilization":{"iterations":150}},"interaction":{"hover":true}}')
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".html")
     net.save_graph(tmp.name)
     
-    js = """<script>
+    # 🔌 Inyección del Panel Lateral Persistente
+    js_panel = """
+    <style>
+        #info-panel {
+            position: fixed; right: 20px; top: 80px; width: 320px; max-height: 85vh;
+            background: #1e293b; color: #f1f5f9; padding: 15px; border-radius: 8px;
+            border: 1px solid #334155; font-size: 13px; z-index: 1000; overflow-y: auto;
+            box-shadow: 0 10px 15px -3px rgba(0,0,0,0.5); display: none;
+        }
+        #info-panel b { color: #10b981; font-size: 14px; }
+        .copy-btn {
+            margin-top: 10px; padding: 6px 12px; background: #3b82f6; color: white;
+            border: none; border-radius: 4px; cursor: pointer; font-size: 12px; width: 100%;
+        }
+        .copy-btn:hover { background: #2563eb; }
+    </style>
+    <div id="info-panel"></div>
+    <script>
     document.addEventListener("DOMContentLoaded", () => {
         setTimeout(() => {
-            const c = document.getElementById("mynetwork");
-            if (c?.visNetwork) {
-                const net = c.visNetwork;
+            const container = document.getElementById("mynetwork");
+            if (container?.visNetwork) {
+                const net = container.visNetwork;
+                const panel = document.getElementById("info-panel");
+                
                 net.on("click", p => {
-                    if (p.nodes.length) {
-                        const conn = net.getConnectedNodes(p.nodes[0]);
-                        const edges = net.getConnectedEdges(p.nodes[0]);
-                        net.setSelection({nodes:[p.nodes[0],...conn], edges}, {highlightEdges:true});
-                    } else net.setSelection({nodes:[],edges:[]});
+                    if (p.nodes.length > 0) {
+                        const nodeId = p.nodes[0];
+                        const nodeData = net.body.data.nodes.get(nodeId);
+                        
+                        if (nodeData) {
+                            // Mostrar panel
+                            panel.style.display = "block";
+                            panel.innerHTML = `<b>📖 Referencia:</b><br><br>${nodeData.title.replace(/\n/g, '<br>')}
+                                <button class="copy-btn" onclick="navigator.clipboard.writeText('${nodeData.title.replace(/'/g, "\\'")}'); this.innerText='✅ Copiado!'; setTimeout(()=>this.innerText='📋 Copiar Referencia', 2000)">📋 Copiar Referencia</button>`;
+                            
+                            // Resaltar conexiones
+                            const conn = net.getConnectedNodes(nodeId);
+                            const edges = net.getConnectedEdges(nodeId);
+                            net.setSelection({nodes:[nodeId, ...conn], edges}, {highlightEdges:true});
+                        }
+                    } else {
+                        panel.style.display = "none";
+                        net.setSelection({nodes:[],edges:[]});
+                    }
                 });
             }
-        }, 1000);
+        }, 1200);
     });
-    </script>"""
+    </script>
+    """
     with open(tmp.name, "r", encoding="utf-8") as f: html = f.read()
-    with open(tmp.name, "w", encoding="utf-8") as f: f.write(html.replace("</body>", js + "</body>"))
+    with open(tmp.name, "w", encoding="utf-8") as f: f.write(html.replace("</body>", js_panel + "</body>"))
     return tmp.name
 
 # 🟢 INTERFAZ DE USUARIO
 def parse_biblio_input(file, text_input):
-    """Combina y limpia entradas de archivo + texto manual"""
     items = []
     if file is not None:
         try:
             content = file.read().decode("utf-8")
-            items = [line.strip() for line in content.replace("\n", ",").split(",") if line.strip()]
+            items = [line.strip() for line in content.splitlines() if line.strip()]
         except Exception:
-            st.warning("⚠️ No se pudo leer el archivo. Usa UTF-8 o TXT/CSV.")
+            st.warning("⚠️ No se pudo leer el archivo.")
     if text_input:
-        items += [t.strip() for t in text_input.replace("\n", ",").split(",") if t.strip()]
-    return ", ".join(set(items))  # Deduplica automáticamente
+        items += [line.strip() for line in text_input.splitlines() if line.strip()]
+    return items
 
 with st.form("input_form"):
     dois = st.text_area("🔗 DOIs iniciales (separados por coma o salto de línea):", placeholder="10.1038/s41586-020-2003-2")
