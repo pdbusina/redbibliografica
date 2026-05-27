@@ -12,14 +12,28 @@ st.title("🕸️ RedBibliográfica: Mapeo de Referencias Cruzadas")
 st.caption("Explora la red de citas, resalta conexiones y diferencia lo que ya tienes de lo externo.")
 
 # 🔹 CACHE API (1 hora)
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=600, show_spinner=False)
 def fetch_citations(doi: str) -> list:
     url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}?fields=title,references.title"
     try:
-        res = requests.get(url, timeout=15)
+        res = requests.get(url, timeout=25)
+        if res.status_code == 404:
+            st.warning(f"🔍 DOI no encontrado: {doi}")
+            return []
+        elif res.status_code == 429:
+            st.warning("⏳ Límite de API alcanzado. Espera 1 min y reintenta.")
+            return []
         res.raise_for_status()
-        return [r.get("title", "").strip() for r in res.json().get("references", []) if r.get("title")]
-    except Exception:
+        data = res.json()
+        refs = data.get("references", [])
+        if not refs:
+            st.info(f"ℹ️ '{data.get('title', 'Paper')}' no tiene referencias en esta API.")
+        return [r.get("title", "").strip() for r in refs if r.get("title")]
+    except requests.exceptions.RequestException as e:
+        st.error(f"🌐 Error de red/API ({res.status_code if 'res' in locals() else '?'}): {e}")
+        return []
+    except Exception as e:
+        st.error(f"❌ Error inesperado: {e}")
         return []
 
 # 🔹 FUZZY MATCHING
