@@ -1,0 +1,5 @@
+streamlit==1.34.0
+networkx==3.2.1
+pyvis==0.3.2
+requests==2.31.0
+rapidfuzz==3.6.0
